@@ -41,33 +41,8 @@ DOCKER_CONFIG_HINTS = {
 }
 
 
-VALID_NAME_CHARS = r'[a-zA-Z0-9\._\-]'
+VALID_NAME_CHARS = '[a-zA-Z0-9\._\-]'
 VALID_EXPOSE_FORMAT = r'^\d+(\-\d+)?(\/[a-zA-Z]+)?$'
-
-VALID_IPV4_SEG = r'(\d{1,2}|1\d{2}|2[0-4]\d|25[0-5])'
-VALID_IPV4_ADDR = r"({IPV4_SEG}\.){{3}}{IPV4_SEG}".format(IPV4_SEG=VALID_IPV4_SEG)
-VALID_REGEX_IPV4_CIDR = r"^{IPV4_ADDR}/(\d|[1-2]\d|3[0-2])$".format(IPV4_ADDR=VALID_IPV4_ADDR)
-
-VALID_IPV6_SEG = r'[0-9a-fA-F]{1,4}'
-VALID_REGEX_IPV6_CIDR = "".join(r"""
-^
-(
-    (({IPV6_SEG}:){{7}}{IPV6_SEG})|
-    (({IPV6_SEG}:){{1,7}}:)|
-    (({IPV6_SEG}:){{1,6}}(:{IPV6_SEG}){{1,1}})|
-    (({IPV6_SEG}:){{1,5}}(:{IPV6_SEG}){{1,2}})|
-    (({IPV6_SEG}:){{1,4}}(:{IPV6_SEG}){{1,3}})|
-    (({IPV6_SEG}:){{1,3}}(:{IPV6_SEG}){{1,4}})|
-    (({IPV6_SEG}:){{1,2}}(:{IPV6_SEG}){{1,5}})|
-    (({IPV6_SEG}:){{1,1}}(:{IPV6_SEG}){{1,6}})|
-    (:((:{IPV6_SEG}){{1,7}}|:))|
-    (fe80:(:{IPV6_SEG}){{0,4}}%[0-9a-zA-Z]{{1,}})|
-    (::(ffff(:0{{1,4}}){{0,1}}:){{0,1}}{IPV4_ADDR})|
-    (({IPV6_SEG}:){{1,4}}:{IPV4_ADDR})
-)
-/(\d|[1-9]\d|1[0-1]\d|12[0-8])
-$
-""".format(IPV6_SEG=VALID_IPV6_SEG, IPV4_ADDR=VALID_IPV4_ADDR).split())
 
 
 @FormatChecker.cls_checks(format="ports", raises=ValidationError)
@@ -85,16 +60,6 @@ def format_expose(instance):
         if not re.match(VALID_EXPOSE_FORMAT, instance):
             raise ValidationError(
                 "should be of the format 'PORT[/PROTOCOL]'")
-
-    return True
-
-
-@FormatChecker.cls_checks("subnet_ip_address", raises=ValidationError)
-def format_subnet_ip_address(instance):
-    if isinstance(instance, six.string_types):
-        if not re.match(VALID_REGEX_IPV4_CIDR, instance) and \
-                not re.match(VALID_REGEX_IPV6_CIDR, instance):
-            raise ValidationError("should use the CIDR format")
 
     return True
 
@@ -240,18 +205,6 @@ def validate_depends_on(service_config, service_names):
             )
 
 
-def validate_credential_spec(service_config):
-    credential_spec = service_config.config.get('credential_spec')
-    if not credential_spec:
-        return
-
-    if 'registry' not in credential_spec and 'file' not in credential_spec:
-        raise ConfigurationError(
-            "Service '{s.name}' is missing 'credential_spec.file' or "
-            "credential_spec.registry'".format(s=service_config)
-        )
-
-
 def get_unsupported_config_msg(path, error_key):
     msg = "Unsupported config option for {}: '{}'".format(path_string(path), error_key)
     if error_key in DOCKER_CONFIG_HINTS:
@@ -342,10 +295,7 @@ def handle_generic_error(error, path):
 
 
 def parse_key_from_error_msg(error):
-    try:
-        return error.message.split("'")[1]
-    except IndexError:
-        return error.message.split('(')[1].split(' ')[0].strip("'")
+    return error.message.split("'")[1]
 
 
 def path_string(path):
@@ -441,7 +391,7 @@ def process_config_schema_errors(error):
 
 def validate_against_config_schema(config_file):
     schema = load_jsonschema(config_file)
-    format_checker = FormatChecker(["ports", "expose", "subnet_ip_address"])
+    format_checker = FormatChecker(["ports", "expose"])
     validator = Draft4Validator(
         schema,
         resolver=RefResolver(get_resolver_path(), schema),
@@ -515,27 +465,3 @@ def handle_errors(errors, format_error_func, filename):
         "The Compose file{file_msg} is invalid because:\n{error_msg}".format(
             file_msg=" '{}'".format(filename) if filename else "",
             error_msg=error_msg))
-
-
-def validate_healthcheck(service_config):
-    healthcheck = service_config.config.get('healthcheck', {})
-
-    if 'test' in healthcheck and isinstance(healthcheck['test'], list):
-        if len(healthcheck['test']) == 0:
-            raise ConfigurationError(
-                'Service "{}" defines an invalid healthcheck: '
-                '"test" is an empty list'
-                .format(service_config.name))
-
-        # when disable is true config.py::process_healthcheck adds "test: ['NONE']" to service_config
-        elif healthcheck['test'][0] == 'NONE' and len(healthcheck) > 1:
-            raise ConfigurationError(
-                'Service "{}" defines an invalid healthcheck: '
-                '"disable: true" cannot be combined with other options'
-                .format(service_config.name))
-
-        elif healthcheck['test'][0] not in ('NONE', 'CMD', 'CMD-SHELL'):
-            raise ConfigurationError(
-                'Service "{}" defines an invalid healthcheck: '
-                'when "test" is a list the first item must be either NONE, CMD or CMD-SHELL'
-                .format(service_config.name))

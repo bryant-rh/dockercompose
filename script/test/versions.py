@@ -36,24 +36,23 @@ import requests
 
 GITHUB_API = 'https://api.github.com/repos'
 
-STAGES = ['tp', 'beta', 'rc']
 
-
-class Version(namedtuple('_Version', 'major minor patch stage edition')):
+class Version(namedtuple('_Version', 'major minor patch rc edition')):
 
     @classmethod
     def parse(cls, version):
         edition = None
         version = version.lstrip('v')
-        version, _, stage = version.partition('-')
-        if stage:
-            if not any(marker in stage for marker in STAGES):
-                edition = stage
-                stage = None
-            elif '-' in stage:
-                edition, stage = stage.split('-')
+        version, _, rc = version.partition('-')
+        if rc:
+            if 'rc' not in rc:
+                edition = rc
+                rc = None
+            elif '-' in rc:
+                edition, rc = rc.split('-')
+
         major, minor, patch = version.split('.', 3)
-        return cls(major, minor, patch, stage, edition)
+        return cls(major, minor, patch, rc, edition)
 
     @property
     def major_minor(self):
@@ -64,27 +63,14 @@ class Version(namedtuple('_Version', 'major minor patch stage edition')):
         """Return a representation that allows this object to be sorted
         correctly with the default comparator.
         """
-        # non-GA releases should appear before GA releases
-        # Order: tp -> beta -> rc -> GA
-        if self.stage:
-            for st in STAGES:
-                if st in self.stage:
-                    stage = (STAGES.index(st), self.stage)
-                    break
-        else:
-            stage = (len(STAGES),)
-
-        return (int(self.major), int(self.minor), int(self.patch)) + stage
+        # rc releases should appear before official releases
+        rc = (0, self.rc) if self.rc else (1, )
+        return (int(self.major), int(self.minor), int(self.patch)) + rc
 
     def __str__(self):
-        stage = '-{}'.format(self.stage) if self.stage else ''
+        rc = '-{}'.format(self.rc) if self.rc else ''
         edition = '-{}'.format(self.edition) if self.edition else ''
-        return '.'.join(map(str, self[:3])) + edition + stage
-
-
-BLACKLIST = [  # List of versions known to be broken and should not be used
-    Version.parse('18.03.0-ce-rc2'),
-]
+        return '.'.join(map(str, self[:3])) + edition + rc
 
 
 def group_versions(versions):
@@ -122,19 +108,16 @@ def get_latest_versions(versions, num=1):
 
 
 def get_default(versions):
-    """Return a :class:`Version` for the latest GA version."""
+    """Return a :class:`Version` for the latest non-rc version."""
     for version in versions:
-        if not version.stage:
+        if not version.rc:
             return version
 
 
 def get_versions(tags):
     for tag in tags:
         try:
-            v = Version.parse(tag['name'])
-            if v in BLACKLIST:
-                continue
-            yield v
+            yield Version.parse(tag['name'])
         except ValueError:
             print("Skipping invalid tag: {name}".format(**tag), file=sys.stderr)
 

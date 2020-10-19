@@ -8,22 +8,15 @@ class StreamOutputError(Exception):
     pass
 
 
-def write_to_stream(s, stream):
-    try:
-        stream.write(s)
-    except UnicodeEncodeError:
-        encoding = getattr(stream, 'encoding', 'ascii')
-        stream.write(s.encode(encoding, errors='replace').decode(encoding))
-
-
 def stream_output(output, stream):
     is_terminal = hasattr(stream, 'isatty') and stream.isatty()
     stream = utils.get_output_stream(stream)
+    all_events = []
     lines = {}
     diff = 0
 
     for event in utils.json_stream(output):
-        yield event
+        all_events.append(event)
         is_progress_event = 'progress' in event or 'progressDetail' in event
 
         if not is_progress_event:
@@ -41,20 +34,22 @@ def stream_output(output, stream):
 
         if image_id not in lines:
             lines[image_id] = len(lines)
-            write_to_stream("\n", stream)
+            stream.write("\n")
 
         diff = len(lines) - lines[image_id]
 
         # move cursor up `diff` rows
-        write_to_stream("%c[%dA" % (27, diff), stream)
+        stream.write("%c[%dA" % (27, diff))
 
         print_output_event(event, stream, is_terminal)
 
         if 'id' in event:
             # move cursor back down
-            write_to_stream("%c[%dB" % (27, diff), stream)
+            stream.write("%c[%dB" % (27, diff))
 
         stream.flush()
+
+    return all_events
 
 
 def print_output_event(event, stream, is_terminal):
@@ -65,47 +60,47 @@ def print_output_event(event, stream, is_terminal):
 
     if is_terminal and 'stream' not in event:
         # erase current line
-        write_to_stream("%c[2K\r" % 27, stream)
+        stream.write("%c[2K\r" % 27)
         terminator = "\r"
     elif 'progressDetail' in event:
         return
 
     if 'time' in event:
-        write_to_stream("[%s] " % event['time'], stream)
+        stream.write("[%s] " % event['time'])
 
     if 'id' in event:
-        write_to_stream("%s: " % event['id'], stream)
+        stream.write("%s: " % event['id'])
 
     if 'from' in event:
-        write_to_stream("(from %s) " % event['from'], stream)
+        stream.write("(from %s) " % event['from'])
 
     status = event.get('status', '')
 
     if 'progress' in event:
-        write_to_stream("%s %s%s" % (status, event['progress'], terminator), stream)
+        stream.write("%s %s%s" % (status, event['progress'], terminator))
     elif 'progressDetail' in event:
         detail = event['progressDetail']
         total = detail.get('total')
         if 'current' in detail and total:
             percentage = float(detail['current']) / float(total) * 100
-            write_to_stream('%s (%.1f%%)%s' % (status, percentage, terminator), stream)
+            stream.write('%s (%.1f%%)%s' % (status, percentage, terminator))
         else:
-            write_to_stream('%s%s' % (status, terminator), stream)
+            stream.write('%s%s' % (status, terminator))
     elif 'stream' in event:
-        write_to_stream("%s%s" % (event['stream'], terminator), stream)
+        stream.write("%s%s" % (event['stream'], terminator))
     else:
-        write_to_stream("%s%s\n" % (status, terminator), stream)
+        stream.write("%s%s\n" % (status, terminator))
 
 
 def get_digest_from_pull(events):
-    digest = None
     for event in events:
         status = event.get('status')
         if not status or 'Digest' not in status:
             continue
-        else:
-            digest = status.split(':', 1)[1].strip()
-    return digest
+
+        _, digest = status.split(':', 1)
+        return digest.strip()
+    return None
 
 
 def get_digest_from_push(events):

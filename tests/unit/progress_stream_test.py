@@ -1,12 +1,5 @@
-# ~*~ encoding: utf-8 ~*~
 from __future__ import absolute_import
 from __future__ import unicode_literals
-
-import io
-import os
-import random
-import shutil
-import tempfile
 
 from six import StringIO
 
@@ -21,8 +14,8 @@ class ProgressStreamTestCase(unittest.TestCase):
             b'31019763, "start": 1413653874, "total": 62763875}, '
             b'"progress": "..."}',
         ]
-        events = list(progress_stream.stream_output(output, StringIO()))
-        assert len(events) == 1
+        events = progress_stream.stream_output(output, StringIO())
+        self.assertEqual(len(events), 1)
 
     def test_stream_output_div_zero(self):
         output = [
@@ -30,8 +23,8 @@ class ProgressStreamTestCase(unittest.TestCase):
             b'0, "start": 1413653874, "total": 0}, '
             b'"progress": "..."}',
         ]
-        events = list(progress_stream.stream_output(output, StringIO()))
-        assert len(events) == 1
+        events = progress_stream.stream_output(output, StringIO())
+        self.assertEqual(len(events), 1)
 
     def test_stream_output_null_total(self):
         output = [
@@ -39,8 +32,8 @@ class ProgressStreamTestCase(unittest.TestCase):
             b'0, "start": 1413653874, "total": null}, '
             b'"progress": "..."}',
         ]
-        events = list(progress_stream.stream_output(output, StringIO()))
-        assert len(events) == 1
+        events = progress_stream.stream_output(output, StringIO())
+        self.assertEqual(len(events), 1)
 
     def test_stream_output_progress_event_tty(self):
         events = [
@@ -52,8 +45,8 @@ class ProgressStreamTestCase(unittest.TestCase):
                 return True
 
         output = TTYStringIO()
-        events = list(progress_stream.stream_output(events, output))
-        assert len(output.getvalue()) > 0
+        events = progress_stream.stream_output(events, output)
+        self.assertTrue(len(output.getvalue()) > 0)
 
     def test_stream_output_progress_event_no_tty(self):
         events = [
@@ -61,8 +54,8 @@ class ProgressStreamTestCase(unittest.TestCase):
         ]
         output = StringIO()
 
-        events = list(progress_stream.stream_output(events, output))
-        assert len(output.getvalue()) == 0
+        events = progress_stream.stream_output(events, output)
+        self.assertEqual(len(output.getvalue()), 0)
 
     def test_stream_output_no_progress_event_no_tty(self):
         events = [
@@ -70,51 +63,25 @@ class ProgressStreamTestCase(unittest.TestCase):
         ]
         output = StringIO()
 
-        events = list(progress_stream.stream_output(events, output))
-        assert len(output.getvalue()) > 0
+        events = progress_stream.stream_output(events, output)
+        self.assertTrue(len(output.getvalue()) > 0)
 
-    def test_mismatched_encoding_stream_write(self):
-        tmpdir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, tmpdir, True)
 
-        def mktempfile(encoding):
-            fname = os.path.join(tmpdir, hex(random.getrandbits(128))[2:-1])
-            return io.open(fname, mode='w+', encoding=encoding)
+def test_get_digest_from_push():
+    digest = "sha256:abcd"
+    events = [
+        {"status": "..."},
+        {"status": "..."},
+        {"progressDetail": {}, "aux": {"Digest": digest}},
+    ]
+    assert progress_stream.get_digest_from_push(events) == digest
 
-        text = '就吃饭'
-        with mktempfile(encoding='utf-8') as tf:
-            progress_stream.write_to_stream(text, tf)
-            tf.seek(0)
-            assert tf.read() == text
 
-        with mktempfile(encoding='utf-32') as tf:
-            progress_stream.write_to_stream(text, tf)
-            tf.seek(0)
-            assert tf.read() == text
-
-        with mktempfile(encoding='ascii') as tf:
-            progress_stream.write_to_stream(text, tf)
-            tf.seek(0)
-            assert tf.read() == '???'
-
-    def test_get_digest_from_push(self):
-        digest = "sha256:abcd"
-        events = [
-            {"status": "..."},
-            {"status": "..."},
-            {"progressDetail": {}, "aux": {"Digest": digest}},
-        ]
-        assert progress_stream.get_digest_from_push(events) == digest
-
-    def test_get_digest_from_pull(self):
-        events = list()
-        assert progress_stream.get_digest_from_pull(events) is None
-
-        digest = "sha256:abcd"
-        events = [
-            {"status": "..."},
-            {"status": "..."},
-            {"status": "Digest: %s" % digest},
-            {"status": "..."},
-        ]
-        assert progress_stream.get_digest_from_pull(events) == digest
+def test_get_digest_from_pull():
+    digest = "sha256:abcd"
+    events = [
+        {"status": "..."},
+        {"status": "..."},
+        {"status": "Digest: %s" % digest},
+    ]
+    assert progress_stream.get_digest_from_pull(events) == digest

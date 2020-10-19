@@ -2,26 +2,19 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 
 import logging
-import os.path
 import ssl
 
 from docker import APIClient
 from docker.errors import TLSParameterError
 from docker.tls import TLSConfig
 from docker.utils import kwargs_from_env
-from docker.utils.config import home_dir
 
-from ..config.environment import Environment
 from ..const import HTTP_TIMEOUT
-from ..utils import unquote_path
 from .errors import UserError
 from .utils import generate_user_agent
+from .utils import unquote_path
 
 log = logging.getLogger(__name__)
-
-
-def default_cert_path():
-    return os.path.join(home_dir(), '.docker')
 
 
 def get_tls_version(environment):
@@ -31,7 +24,7 @@ def get_tls_version(environment):
 
     tls_attr_name = "PROTOCOL_{}".format(compose_tls_version)
     if not hasattr(ssl, tls_attr_name):
-        log.warning(
+        log.warn(
             'The "{}" protocol is unavailable. You may need to update your '
             'version of Python or OpenSSL. Falling back to TLSv1 (default).'
             .format(compose_tls_version)
@@ -42,32 +35,14 @@ def get_tls_version(environment):
 
 
 def tls_config_from_options(options, environment=None):
-    environment = environment or Environment()
-    cert_path = environment.get('DOCKER_CERT_PATH') or None
-
     tls = options.get('--tls', False)
     ca_cert = unquote_path(options.get('--tlscacert'))
     cert = unquote_path(options.get('--tlscert'))
     key = unquote_path(options.get('--tlskey'))
-    # verify is a special case - with docopt `--tlsverify` = False means it
-    # wasn't used, so we set it if either the environment or the flag is True
-    # see https://github.com/docker/compose/issues/5632
-    verify = options.get('--tlsverify') or environment.get_boolean('DOCKER_TLS_VERIFY')
-
+    verify = options.get('--tlsverify')
     skip_hostname_check = options.get('--skip-hostname-check', False)
-    if cert_path is not None and not any((ca_cert, cert, key)):
-        # FIXME: Modify TLSConfig to take a cert_path argument and do this internally
-        cert = os.path.join(cert_path, 'cert.pem')
-        key = os.path.join(cert_path, 'key.pem')
-        ca_cert = os.path.join(cert_path, 'ca.pem')
 
-    if verify and not any((ca_cert, cert, key)):
-        # Default location for cert files is ~/.docker
-        ca_cert = os.path.join(default_cert_path(), 'ca.pem')
-        cert = os.path.join(default_cert_path(), 'cert.pem')
-        key = os.path.join(default_cert_path(), 'key.pem')
-
-    tls_version = get_tls_version(environment)
+    tls_version = get_tls_version(environment or {})
 
     advanced_opts = any([ca_cert, cert, key, verify, tls_version])
 
@@ -117,14 +92,4 @@ def docker_client(environment, version=None, tls_config=None, host=None,
 
     kwargs['user_agent'] = generate_user_agent()
 
-    # Workaround for
-    # https://pyinstaller.readthedocs.io/en/v3.3.1/runtime-information.html#ld-library-path-libpath-considerations
-    if 'LD_LIBRARY_PATH_ORIG' in environment:
-        kwargs['credstore_env'] = {
-            'LD_LIBRARY_PATH': environment.get('LD_LIBRARY_PATH_ORIG'),
-        }
-
-    client = APIClient(**kwargs)
-    client._original_base_url = kwargs.get('base_url')
-
-    return client
+    return APIClient(**kwargs)

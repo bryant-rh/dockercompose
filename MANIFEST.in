@@ -4,7 +4,8 @@ include requirements.txt
 include requirements-dev.txt
 include tox.ini
 include *.md
-include README.md
+exclude README.md
+include README.rst
 include compose/config/*.json
 include compose/GITSHA
 recursive-include contrib/completion *

@@ -134,10 +134,7 @@ def build_thread(container, presenter, queue, log_args):
 def build_thread_map(initial_containers, presenters, thread_args):
     return {
         container.id: build_thread(container, next(presenters), *thread_args)
-        # Container order is unspecified, so they are sorted by name in order to make
-        # container:presenter (log color) assignment deterministic when given a list of containers
-        # with the same names.
-        for container in sorted(initial_containers, key=lambda c: c.name)
+        for container in initial_containers
     }
 
 
@@ -213,14 +210,9 @@ def start_producer_thread(thread_args):
 
 
 def watch_events(thread_map, event_stream, presenters, thread_args):
-    crashed_containers = set()
     for event in event_stream:
         if event['action'] == 'stop':
             thread_map.pop(event['id'], None)
-
-        if event['action'] == 'die':
-            thread_map.pop(event['id'], None)
-            crashed_containers.add(event['id'])
 
         if event['action'] != 'start':
             continue
@@ -231,22 +223,10 @@ def watch_events(thread_map, event_stream, presenters, thread_args):
             # Container was stopped and started, we need a new thread
             thread_map.pop(event['id'], None)
 
-        # Container crashed so we should reattach to it
-        if event['id'] in crashed_containers:
-            container = event['container']
-            if not container.is_restarting:
-                try:
-                    container.attach_log_stream()
-                except APIError:
-                    # Just ignore errors when reattaching to already crashed containers
-                    pass
-            crashed_containers.remove(event['id'])
-
         thread_map[event['id']] = build_thread(
             event['container'],
             next(presenters),
-            *thread_args
-        )
+            *thread_args)
 
 
 def consume_queue(queue, cascade_stop):

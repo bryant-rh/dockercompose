@@ -1,9 +1,10 @@
-name: compose-arm64:1.25.0
+name: compose-arm64:1.17.1
 
 on:
   push:
     branches: 
       - master
+      - feat/1.17.1
 #    paths:
 #      - 'Dockerfile'
 #      # - 'gocv-debian.Dockerfile'
@@ -12,7 +13,7 @@ on:
 jobs:
   opencv-ubuntu:
     runs-on: ubuntu-latest
-    name: builx compose-arm64:1.25.0
+    name: builx compose-arm64:1.17.1
     steps:
       # https://github.com/marketplace/actions/customizable-docker-buildx
       - name: Checkout master
@@ -22,7 +23,7 @@ jobs:
         with:
           publish: true
           imageName: bryantrh/compose-arm64
-          tag: 1.25.0
+          tag: 1.17.1
           dockerHubUser: ${{ secrets.DOCKER_USERNAME }}
           dockerHubPassword: ${{ secrets.DOCKER_PASSWORD }}
           #platform: linux/amd64,linux/arm64

@@ -4,12 +4,10 @@ from __future__ import unicode_literals
 import logging
 import operator
 import sys
-from threading import Lock
 from threading import Semaphore
 from threading import Thread
 
 from docker.errors import APIError
-from docker.errors import ImageNotFound
 from six.moves import _thread as thread
 from six.moves.queue import Empty
 from six.moves.queue import Queue
@@ -17,7 +15,6 @@ from six.moves.queue import Queue
 from compose.cli.colors import green
 from compose.cli.colors import red
 from compose.cli.signals import ShutdownException
-from compose.const import PARALLEL_LIMIT
 from compose.errors import HealthCheckFailed
 from compose.errors import NoHealthCheckConfigured
 from compose.errors import OperationFailedError
@@ -29,81 +26,42 @@ log = logging.getLogger(__name__)
 STOP = object()
 
 
-class GlobalLimit(object):
-    """Simple class to hold a global semaphore limiter for a project. This class
-    should be treated as a singleton that is instantiated when the project is.
-    """
-
-    global_limiter = Semaphore(PARALLEL_LIMIT)
-
-    @classmethod
-    def set_global_limit(cls, value):
-        if value is None:
-            value = PARALLEL_LIMIT
-        cls.global_limiter = Semaphore(value)
-
-
-def parallel_execute_watch(events, writer, errors, results, msg, get_name, fail_check):
-    """ Watch events from a parallel execution, update status and fill errors and results.
-        Returns exception to re-raise.
-    """
-    error_to_reraise = None
-    for obj, result, exception in events:
-        if exception is None:
-            if fail_check is not None and fail_check(obj):
-                writer.write(msg, get_name(obj), 'failed', red)
-            else:
-                writer.write(msg, get_name(obj), 'done', green)
-            results.append(result)
-        elif isinstance(exception, ImageNotFound):
-            # This is to bubble up ImageNotFound exceptions to the client so we
-            # can prompt the user if they want to rebuild.
-            errors[get_name(obj)] = exception.explanation
-            writer.write(msg, get_name(obj), 'error', red)
-            error_to_reraise = exception
-        elif isinstance(exception, APIError):
-            errors[get_name(obj)] = exception.explanation
-            writer.write(msg, get_name(obj), 'error', red)
-        elif isinstance(exception, (OperationFailedError, HealthCheckFailed, NoHealthCheckConfigured)):
-            errors[get_name(obj)] = exception.msg
-            writer.write(msg, get_name(obj), 'error', red)
-        elif isinstance(exception, UpstreamError):
-            writer.write(msg, get_name(obj), 'error', red)
-        else:
-            errors[get_name(obj)] = exception
-            error_to_reraise = exception
-    return error_to_reraise
-
-
-def parallel_execute(objects, func, get_name, msg, get_deps=None, limit=None, fail_check=None):
+def parallel_execute(objects, func, get_name, msg, get_deps=None, limit=None):
     """Runs func on objects in parallel while ensuring that func is
     ran on object only after it is ran on all its dependencies.
 
     get_deps called on object must return a collection with its dependencies.
     get_name called on object must return its name.
-    fail_check is an additional failure check for cases that should display as a failure
-        in the CLI logs, but don't raise an exception (such as attempting to start 0 containers)
     """
     objects = list(objects)
     stream = get_output_stream(sys.stderr)
 
-    if ParallelStreamWriter.instance:
-        writer = ParallelStreamWriter.instance
-    else:
-        writer = ParallelStreamWriter(stream)
-
+    writer = ParallelStreamWriter(stream, msg)
     for obj in objects:
-        writer.add_object(msg, get_name(obj))
-    for obj in objects:
-        writer.write_initial(msg, get_name(obj))
+        writer.add_object(get_name(obj))
+    writer.write_initial()
 
     events = parallel_execute_iter(objects, func, get_deps, limit)
 
     errors = {}
     results = []
-    error_to_reraise = parallel_execute_watch(
-        events, writer, errors, results, msg, get_name, fail_check
-    )
+    error_to_reraise = None
+
+    for obj, result, exception in events:
+        if exception is None:
+            writer.write(get_name(obj), 'done', green)
+            results.append(result)
+        elif isinstance(exception, APIError):
+            errors[get_name(obj)] = exception.explanation
+            writer.write(get_name(obj), 'error', red)
+        elif isinstance(exception, (OperationFailedError, HealthCheckFailed, NoHealthCheckConfigured)):
+            errors[get_name(obj)] = exception.msg
+            writer.write(get_name(obj), 'error', red)
+        elif isinstance(exception, UpstreamError):
+            writer.write(get_name(obj), 'error', red)
+        else:
+            errors[get_name(obj)] = exception
+            error_to_reraise = exception
 
     for obj_name, error in errors.items():
         stream.write("\nERROR: for {}  {}\n".format(obj_name, error))
@@ -205,7 +163,7 @@ def producer(obj, func, results, limiter):
     The entry point for a producer thread which runs func on a single object.
     Places a tuple on the results queue once func has either returned or raised.
     """
-    with limiter, GlobalLimit.global_limiter:
+    with limiter:
         try:
             result = func(obj)
             results.put((obj, result, None))
@@ -264,67 +222,54 @@ class ParallelStreamWriter(object):
     """
 
     noansi = False
-    lock = Lock()
-    instance = None
 
     @classmethod
     def set_noansi(cls, value=True):
         cls.noansi = value
 
-    def __init__(self, stream):
+    def __init__(self, stream, msg):
         self.stream = stream
+        self.msg = msg
         self.lines = []
         self.width = 0
-        ParallelStreamWriter.instance = self
 
-    def add_object(self, msg, obj_index):
-        if msg is None:
+    def add_object(self, obj_index):
+        self.lines.append(obj_index)
+        self.width = max(self.width, len(obj_index))
+
+    def write_initial(self):
+        if self.msg is None:
             return
-        self.lines.append(msg + obj_index)
-        self.width = max(self.width, len(msg + ' ' + obj_index))
+        for line in self.lines:
+            self.stream.write("{} {:<{width}} ... \r\n".format(self.msg, line,
+                              width=self.width))
+        self.stream.flush()
 
-    def write_initial(self, msg, obj_index):
-        if msg is None:
-            return
-        return self._write_noansi(msg, obj_index, '')
-
-    def _write_ansi(self, msg, obj_index, status):
-        self.lock.acquire()
-        position = self.lines.index(msg + obj_index)
+    def _write_ansi(self, obj_index, status):
+        position = self.lines.index(obj_index)
         diff = len(self.lines) - position
         # move up
         self.stream.write("%c[%dA" % (27, diff))
         # erase
         self.stream.write("%c[2K\r" % 27)
-        self.stream.write("{:<{width}} ... {}\r".format(msg + ' ' + obj_index,
+        self.stream.write("{} {:<{width}} ... {}\r".format(self.msg, obj_index,
                           status, width=self.width))
         # move back down
         self.stream.write("%c[%dB" % (27, diff))
         self.stream.flush()
-        self.lock.release()
 
-    def _write_noansi(self, msg, obj_index, status):
-        self.stream.write(
-            "{:<{width}} ... {}\r\n".format(
-                msg + ' ' + obj_index, status, width=self.width
-            )
-        )
+    def _write_noansi(self, obj_index, status):
+        self.stream.write("{} {:<{width}} ... {}\r\n".format(self.msg, obj_index,
+                          status, width=self.width))
         self.stream.flush()
 
-    def write(self, msg, obj_index, status, color_func):
-        if msg is None:
+    def write(self, obj_index, status, color_func):
+        if self.msg is None:
             return
         if self.noansi:
-            self._write_noansi(msg, obj_index, status)
+            self._write_noansi(obj_index, status)
         else:
-            self._write_ansi(msg, obj_index, color_func(status))
-
-
-def get_stream_writer():
-    instance = ParallelStreamWriter.instance
-    if instance is None:
-        raise RuntimeError('ParallelStreamWriter has not yet been instantiated')
-    return instance
+            self._write_ansi(obj_index, color_func(status))
 
 
 def parallel_operation(containers, operation, options, message):

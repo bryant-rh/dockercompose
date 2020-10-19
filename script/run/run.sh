@@ -15,7 +15,7 @@
 
 set -e
 
-VERSION="1.25.0"
+VERSION="1.17.1"
 IMAGE="docker/compose:$VERSION"
 
 
@@ -47,17 +47,11 @@ if [ -n "$HOME" ]; then
 fi
 
 # Only allocate tty if we detect one
-if [ -t 0 -a -t 1 ]; then
-    DOCKER_RUN_OPTIONS="$DOCKER_RUN_OPTIONS -t"
+if [ -t 1 ]; then
+    DOCKER_RUN_OPTIONS="-t"
 fi
-
-# Always set -i to support piped and terminal input in run/exec
-DOCKER_RUN_OPTIONS="$DOCKER_RUN_OPTIONS -i"
-
-
-# Handle userns security
-if [ ! -z "$(docker info 2>/dev/null | grep userns)" ]; then
-    DOCKER_RUN_OPTIONS="$DOCKER_RUN_OPTIONS --userns=host"
+if [ -t 0 ]; then
+    DOCKER_RUN_OPTIONS="$DOCKER_RUN_OPTIONS -i"
 fi
 
 exec docker run --rm $DOCKER_RUN_OPTIONS $DOCKER_ADDR $COMPOSE_OPTIONS $VOLUMES -w "$(pwd)" $IMAGE "$@"

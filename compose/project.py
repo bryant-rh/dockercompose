@@ -4,20 +4,17 @@ from __future__ import unicode_literals
 import datetime
 import logging
 import operator
-import re
 from functools import reduce
-from os import path
 
 import enum
-import six
 from docker.errors import APIError
-from docker.utils import version_lt
 
 from . import parallel
 from .config import ConfigurationError
 from .config.config import V1
 from .config.sort_services import get_container_name_from_network_mode
 from .config.sort_services import get_service_name_from_network_mode
+from .const import IMAGE_EVENTS
 from .const import LABEL_ONE_OFF
 from .const import LABEL_PROJECT
 from .const import LABEL_SERVICE
@@ -30,13 +27,11 @@ from .service import ContainerNetworkMode
 from .service import ContainerPidMode
 from .service import ConvergenceStrategy
 from .service import NetworkMode
-from .service import parse_repository_tag
 from .service import PidMode
 from .service import Service
 from .service import ServiceNetworkMode
 from .service import ServicePidMode
 from .utils import microseconds_from_time_nano
-from .utils import truncate_string
 from .volume import ProjectVolumes
 
 
@@ -73,17 +68,14 @@ class Project(object):
         self.networks = networks or ProjectNetworks({}, False)
         self.config_version = config_version
 
-    def labels(self, one_off=OneOffFilter.exclude, legacy=False):
-        name = self.name
-        if legacy:
-            name = re.sub(r'[_-]', '', name)
-        labels = ['{0}={1}'.format(LABEL_PROJECT, name)]
+    def labels(self, one_off=OneOffFilter.exclude):
+        labels = ['{0}={1}'.format(LABEL_PROJECT, self.name)]
 
         OneOffFilter.update_labels(one_off, labels)
         return labels
 
     @classmethod
-    def from_config(cls, name, config_data, client, default_platform=None, extra_labels=[]):
+    def from_config(cls, name, config_data, client):
         """
         Construct a Project from a config.Config object.
         """
@@ -134,9 +126,6 @@ class Project(object):
                     volumes_from=volumes_from,
                     secrets=secrets,
                     pid_mode=pid_mode,
-                    platform=service_dict.pop('platform', None),
-                    default_platform=default_platform,
-                    extra_labels=extra_labels,
                     **service_dict)
             )
 
@@ -282,7 +271,6 @@ class Project(object):
             operator.attrgetter('name'),
             'Starting',
             get_deps,
-            fail_check=lambda obj: not obj.containers(),
         )
 
         return containers
@@ -322,16 +310,9 @@ class Project(object):
             service_names, stopped=True, one_off=one_off
         ), options)
 
-    def down(
-            self,
-            remove_image_type,
-            include_volumes,
-            remove_orphans=False,
-            timeout=None,
-            ignore_orphans=False):
-        self.stop(one_off=OneOffFilter.include, timeout=timeout)
-        if not ignore_orphans:
-            self.find_orphan_containers(remove_orphans)
+    def down(self, remove_image_type, include_volumes, remove_orphans=False):
+        self.stop(one_off=OneOffFilter.include)
+        self.find_orphan_containers(remove_orphans)
         self.remove_stopped(v=include_volumes, one_off=OneOffFilter.include)
 
         self.networks.remove()
@@ -356,45 +337,12 @@ class Project(object):
         )
         return containers
 
-    def build(self, service_names=None, no_cache=False, pull=False, force_rm=False, memory=None,
-              build_args=None, gzip=False, parallel_build=False, rm=True, silent=False, cli=False,
-              progress=None):
-
-        services = []
+    def build(self, service_names=None, no_cache=False, pull=False, force_rm=False, build_args=None):
         for service in self.get_services(service_names):
             if service.can_be_built():
-                services.append(service)
-            elif not silent:
+                service.build(no_cache, pull, force_rm, build_args)
+            else:
                 log.info('%s uses an image, skipping' % service.name)
-
-        if cli:
-            log.warning("Native build is an experimental feature and could change at any time")
-            if parallel_build:
-                log.warning("Flag '--parallel' is ignored when building with "
-                            "COMPOSE_DOCKER_CLI_BUILD=1")
-            if gzip:
-                log.warning("Flag '--compress' is ignored when building with "
-                            "COMPOSE_DOCKER_CLI_BUILD=1")
-
-        def build_service(service):
-            service.build(no_cache, pull, force_rm, memory, build_args, gzip, rm, silent, cli, progress)
-        if parallel_build:
-            _, errors = parallel.parallel_execute(
-                services,
-                build_service,
-                operator.attrgetter('name'),
-                'Building',
-                limit=5,
-            )
-            if len(errors):
-                combined_errors = '\n'.join([
-                    e.decode('utf-8') if isinstance(e, six.binary_type) else e for e in errors.values()
-                ])
-                raise ProjectError(combined_errors)
-
-        else:
-            for service in services:
-                build_service(service)
 
     def create(
         self,
@@ -414,13 +362,11 @@ class Project(object):
                 detached=True,
                 start=False)
 
-    def _legacy_event_processor(self, service_names):
-        # Only for v1 files or when Compose is forced to use an older API version
+    def events(self, service_names=None):
         def build_container_event(event, container):
             time = datetime.datetime.fromtimestamp(event['time'])
             time = time.replace(
-                microsecond=microseconds_from_time_nano(event['timeNano'])
-            )
+                microsecond=microseconds_from_time_nano(event['timeNano']))
             return {
                 'time': time,
                 'type': 'container',
@@ -439,71 +385,23 @@ class Project(object):
             filters={'label': self.labels()},
             decode=True
         ):
-            # This is a guard against some events broadcasted by swarm that
-            # don't have a status field.
+            # The first part of this condition is a guard against some events
+            # broadcasted by swarm that don't have a status field.
             # See https://github.com/docker/compose/issues/3316
-            if 'status' not in event:
+            if 'status' not in event or event['status'] in IMAGE_EVENTS:
+                # We don't receive any image events because labels aren't applied
+                # to images
                 continue
 
+            # TODO: get labels from the API v1.22 , see github issue 2618
             try:
-                # this can fail if the container has been removed or if the event
-                # refers to an image
+                # this can fail if the container has been removed
                 container = Container.from_id(self.client, event['id'])
             except APIError:
                 continue
             if container.service not in service_names:
                 continue
             yield build_container_event(event, container)
-
-    def events(self, service_names=None):
-        if version_lt(self.client.api_version, '1.22'):
-            # New, better event API was introduced in 1.22.
-            return self._legacy_event_processor(service_names)
-
-        def build_container_event(event):
-            container_attrs = event['Actor']['Attributes']
-            time = datetime.datetime.fromtimestamp(event['time'])
-            time = time.replace(
-                microsecond=microseconds_from_time_nano(event['timeNano'])
-            )
-
-            container = None
-            try:
-                container = Container.from_id(self.client, event['id'])
-            except APIError:
-                # Container may have been removed (e.g. if this is a destroy event)
-                pass
-
-            return {
-                'time': time,
-                'type': 'container',
-                'action': event['status'],
-                'id': event['Actor']['ID'],
-                'service': container_attrs.get(LABEL_SERVICE),
-                'attributes': dict([
-                    (k, v) for k, v in container_attrs.items()
-                    if not k.startswith('com.docker.compose.')
-                ]),
-                'container': container,
-            }
-
-        def yield_loop(service_names):
-            for event in self.client.events(
-                filters={'label': self.labels()},
-                decode=True
-            ):
-                # TODO: support other event types
-                if event.get('Type') != 'container':
-                    continue
-
-                try:
-                    if event['Actor']['Attributes'][LABEL_SERVICE] not in service_names:
-                        continue
-                except KeyError:
-                    continue
-                yield build_container_event(event)
-
-        return yield_loop(set(service_names) if service_names else self.service_names)
 
     def up(self,
            service_names=None,
@@ -513,23 +411,14 @@ class Project(object):
            timeout=None,
            detached=False,
            remove_orphans=False,
-           ignore_orphans=False,
            scale_override=None,
            rescale=True,
-           start=True,
-           always_recreate_deps=False,
-           reset_container_image=False,
-           renew_anonymous_volumes=False,
-           silent=False,
-           cli=False,
-           ):
+           start=True):
 
-        if cli:
-            log.warning("Native build is an experimental feature and could change at any time")
+        warn_for_swarm_mode(self.client)
 
         self.initialize()
-        if not ignore_orphans:
-            self.find_orphan_containers(remove_orphans)
+        self.find_orphan_containers(remove_orphans)
 
         if scale_override is None:
             scale_override = {}
@@ -539,21 +428,17 @@ class Project(object):
             include_deps=start_deps)
 
         for svc in services:
-            svc.ensure_image_exists(do_build=do_build, silent=silent, cli=cli)
-        plans = self._get_convergence_plans(
-            services, strategy, always_recreate_deps=always_recreate_deps)
+            svc.ensure_image_exists(do_build=do_build)
+        plans = self._get_convergence_plans(services, strategy)
 
         def do(service):
-
             return service.execute_convergence_plan(
                 plans[service.name],
                 timeout=timeout,
                 detached=detached,
                 scale_override=scale_override.get(service.name),
                 rescale=rescale,
-                start=start,
-                reset_container_image=reset_container_image,
-                renew_anonymous_volumes=renew_anonymous_volumes,
+                start=start
             )
 
         def get_deps(service):
@@ -585,7 +470,7 @@ class Project(object):
         self.networks.initialize()
         self.volumes.initialize()
 
-    def _get_convergence_plans(self, services, strategy, always_recreate_deps=False):
+    def _get_convergence_plans(self, services, strategy):
         plans = {}
 
         for service in services:
@@ -600,15 +485,7 @@ class Project(object):
                 log.debug('%s has upstream changes (%s)',
                           service.name,
                           ", ".join(updated_dependencies))
-                containers_stopped = any(
-                    service.containers(stopped=True, filters={'status': ['created', 'exited']}))
-                service_has_links = any(service.get_link_names())
-                container_has_links = any(c.get('HostConfig.Links') for c in service.containers())
-                should_recreate_for_links = service_has_links ^ container_has_links
-                if always_recreate_deps or containers_stopped or should_recreate_for_links:
-                    plan = service.convergence_plan(ConvergenceStrategy.always)
-                else:
-                    plan = service.convergence_plan(strategy)
+                plan = service.convergence_plan(ConvergenceStrategy.always)
             else:
                 plan = service.convergence_plan(strategy)
 
@@ -616,80 +493,37 @@ class Project(object):
 
         return plans
 
-    def pull(self, service_names=None, ignore_pull_failures=False, parallel_pull=False, silent=False,
-             include_deps=False):
-        services = self.get_services(service_names, include_deps)
-        images_to_build = {service.image_name for service in services if service.can_be_built()}
-        services_to_pull = [service for service in services if service.image_name not in images_to_build]
-
-        msg = not silent and 'Pulling' or None
+    def pull(self, service_names=None, ignore_pull_failures=False, parallel_pull=False, silent=False):
+        services = self.get_services(service_names, include_deps=False)
 
         if parallel_pull:
             def pull_service(service):
-                strm = service.pull(ignore_pull_failures, True, stream=True)
-                if strm is None:  # Attempting to pull service with no `image` key is a no-op
-                    return
-
-                writer = parallel.get_stream_writer()
-
-                for event in strm:
-                    if 'status' not in event:
-                        continue
-                    status = event['status'].lower()
-                    if 'progressDetail' in event:
-                        detail = event['progressDetail']
-                        if 'current' in detail and 'total' in detail:
-                            percentage = float(detail['current']) / float(detail['total'])
-                            status = '{} ({:.1%})'.format(status, percentage)
-
-                    writer.write(
-                        msg, service.name, truncate_string(status), lambda s: s
-                    )
+                service.pull(ignore_pull_failures, True)
 
             _, errors = parallel.parallel_execute(
-                services_to_pull,
+                services,
                 pull_service,
                 operator.attrgetter('name'),
-                msg,
+                'Pulling',
                 limit=5,
             )
             if len(errors):
-                combined_errors = '\n'.join([
-                    e.decode('utf-8') if isinstance(e, six.binary_type) else e for e in errors.values()
-                ])
-                raise ProjectError(combined_errors)
-
+                raise ProjectError(b"\n".join(errors.values()))
         else:
-            for service in services_to_pull:
+            for service in services:
                 service.pull(ignore_pull_failures, silent=silent)
 
     def push(self, service_names=None, ignore_push_failures=False):
-        unique_images = set()
         for service in self.get_services(service_names, include_deps=False):
-            # Considering <image> and <image:latest> as the same
-            repo, tag, sep = parse_repository_tag(service.image_name)
-            service_image_name = sep.join((repo, tag)) if tag else sep.join((repo, 'latest'))
-
-            if service_image_name not in unique_images:
-                service.push(ignore_push_failures)
-                unique_images.add(service_image_name)
+            service.push(ignore_push_failures)
 
     def _labeled_containers(self, stopped=False, one_off=OneOffFilter.exclude):
-        ctnrs = list(filter(None, [
+        return list(filter(None, [
             Container.from_ps(self.client, container)
             for container in self.client.containers(
                 all=stopped,
                 filters={'label': self.labels(one_off=one_off)})])
         )
-        if ctnrs:
-            return ctnrs
-
-        return list(filter(lambda c: c.has_legacy_proj_name(self.name), filter(None, [
-            Container.from_ps(self.client, container)
-            for container in self.client.containers(
-                all=stopped,
-                filters={'label': self.labels(one_off=one_off, legacy=True)})])
-        ))
 
     def containers(self, service_names=None, stopped=False, one_off=OneOffFilter.exclude):
         if service_names:
@@ -706,7 +540,7 @@ class Project(object):
 
     def find_orphan_containers(self, remove_orphans):
         def _find():
-            containers = set(self._labeled_containers() + self._labeled_containers(stopped=True))
+            containers = self._labeled_containers()
             for ctnr in containers:
                 service_name = ctnr.labels.get(LABEL_SERVICE)
                 if service_name not in self.service_names:
@@ -717,10 +551,7 @@ class Project(object):
         if remove_orphans:
             for ctnr in orphans:
                 log.info('Removing orphan container "{0}"'.format(ctnr.name))
-                try:
-                    ctnr.kill()
-                except APIError:
-                    pass
+                ctnr.kill()
                 ctnr.remove(force=True)
         else:
             log.warning(
@@ -748,11 +579,10 @@ class Project(object):
 
     def build_container_operation_with_timeout_func(self, operation, options):
         def container_operation_with_timeout(container):
-            _options = options.copy()
-            if _options.get('timeout') is None:
+            if options.get('timeout') is None:
                 service = self.get_service(container.service)
-                _options['timeout'] = service.stop_timeout(None)
-            return getattr(container, operation)(**_options)
+                options['timeout'] = service.stop_timeout(None)
+            return getattr(container, operation)(**options)
         return container_operation_with_timeout
 
 
@@ -794,14 +624,14 @@ def get_secrets(service, service_secrets, secret_defs):
                 "Service \"{service}\" uses an undefined secret \"{secret}\" "
                 .format(service=service, secret=secret.source))
 
-        if secret_def.get('external'):
-            log.warning("Service \"{service}\" uses secret \"{secret}\" which is external. "
-                        "External secrets are not available to containers created by "
-                        "docker-compose.".format(service=service, secret=secret.source))
+        if secret_def.get('external_name'):
+            log.warn("Service \"{service}\" uses secret \"{secret}\" which is external. "
+                     "External secrets are not available to containers created by "
+                     "docker-compose.".format(service=service, secret=secret.source))
             continue
 
         if secret.uid or secret.gid or secret.mode:
-            log.warning(
+            log.warn(
                 "Service \"{service}\" uses secret \"{secret}\" with uid, "
                 "gid, or mode. These fields are not supported by this "
                 "implementation of the Compose file".format(
@@ -809,23 +639,29 @@ def get_secrets(service, service_secrets, secret_defs):
                 )
             )
 
-        secret_file = secret_def.get('file')
-        if not path.isfile(str(secret_file)):
-            log.warning(
-                "Service \"{service}\" uses an undefined secret file \"{secret_file}\", "
-                "the following file should be created \"{secret_file}\"".format(
-                    service=service, secret_file=secret_file
-                )
-            )
-        secrets.append({'secret': secret, 'file': secret_file})
+        secrets.append({'secret': secret, 'file': secret_def.get('file')})
 
     return secrets
 
 
+def warn_for_swarm_mode(client):
+    info = client.info()
+    if info.get('Swarm', {}).get('LocalNodeState') == 'active':
+        if info.get('ServerVersion', '').startswith('ucp'):
+            # UCP does multi-node scheduling with traditional Compose files.
+            return
+
+        log.warn(
+            "The Docker Engine you're using is running in swarm mode.\n\n"
+            "Compose does not use swarm mode to deploy services to multiple nodes in a swarm. "
+            "All containers will be scheduled on the current node.\n\n"
+            "To deploy your application across the swarm, "
+            "use `docker stack deploy`.\n"
+        )
+
+
 class NoSuchService(Exception):
     def __init__(self, name):
-        if isinstance(name, six.binary_type):
-            name = name.decode('utf-8')
         self.name = name
         self.msg = "No such service: %s" % self.name
 

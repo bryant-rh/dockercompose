@@ -5,13 +5,11 @@ import codecs
 import contextlib
 import logging
 import os
-import re
 
 import six
 
 from ..const import IS_WINDOWS_PLATFORM
 from .errors import ConfigurationError
-from .errors import EnvFileNotFound
 
 log = logging.getLogger(__name__)
 
@@ -19,16 +17,10 @@ log = logging.getLogger(__name__)
 def split_env(env):
     if isinstance(env, six.binary_type):
         env = env.decode('utf-8', 'replace')
-    key = value = None
     if '=' in env:
-        key, value = env.split('=', 1)
+        return env.split('=', 1)
     else:
-        key = env
-    if re.search(r'\s', key):
-        raise ConfigurationError(
-            "environment variable name '{}' may not contain whitespace.".format(key)
-        )
-    return key, value
+        return env, None
 
 
 def env_vars_from_file(filename):
@@ -36,19 +28,16 @@ def env_vars_from_file(filename):
     Read in a line delimited file of environment variables.
     """
     if not os.path.exists(filename):
-        raise EnvFileNotFound("Couldn't find env file: {}".format(filename))
+        raise ConfigurationError("Couldn't find env file: %s" % filename)
     elif not os.path.isfile(filename):
-        raise EnvFileNotFound("{} is not a file.".format(filename))
+        raise ConfigurationError("%s is not a file." % (filename))
     env = {}
-    with contextlib.closing(codecs.open(filename, 'r', 'utf-8-sig')) as fileobj:
+    with contextlib.closing(codecs.open(filename, 'r', 'utf-8')) as fileobj:
         for line in fileobj:
             line = line.strip()
             if line and not line.startswith('#'):
-                try:
-                    k, v = split_env(line)
-                    env[k] = v
-                except ConfigurationError as e:
-                    raise ConfigurationError('In file {}: {}'.format(filename, e.msg))
+                k, v = split_env(line)
+                env[k] = v
     return env
 
 
@@ -56,24 +45,19 @@ class Environment(dict):
     def __init__(self, *args, **kwargs):
         super(Environment, self).__init__(*args, **kwargs)
         self.missing_keys = []
-        self.silent = False
 
     @classmethod
-    def from_env_file(cls, base_dir, env_file=None):
+    def from_env_file(cls, base_dir):
         def _initialize():
             result = cls()
             if base_dir is None:
                 return result
-            if env_file:
-                env_file_path = os.path.join(base_dir, env_file)
-            else:
-                env_file_path = os.path.join(base_dir, '.env')
+            env_file_path = os.path.join(base_dir, '.env')
             try:
                 return cls(env_vars_from_file(env_file_path))
-            except EnvFileNotFound:
+            except ConfigurationError:
                 pass
             return result
-
         instance = _initialize()
         instance.update(os.environ)
         return instance
@@ -99,8 +83,8 @@ class Environment(dict):
                     return super(Environment, self).__getitem__(key.upper())
                 except KeyError:
                     pass
-            if not self.silent and key not in self.missing_keys:
-                log.warning(
+            if key not in self.missing_keys:
+                log.warn(
                     "The {} variable is not set. Defaulting to a blank string."
                     .format(key)
                 )

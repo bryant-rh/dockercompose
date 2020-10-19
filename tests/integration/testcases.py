@@ -9,7 +9,6 @@ from docker.errors import APIError
 from docker.utils import version_lt
 
 from .. import unittest
-from ..helpers import BUSYBOX_IMAGE_WITH_TAG
 from compose.cli.docker_client import docker_client
 from compose.config.config import resolve_environment
 from compose.config.environment import Environment
@@ -21,7 +20,7 @@ from compose.const import COMPOSEFILE_V2_2 as V2_2
 from compose.const import COMPOSEFILE_V2_3 as V2_3
 from compose.const import COMPOSEFILE_V3_0 as V3_0
 from compose.const import COMPOSEFILE_V3_2 as V3_2
-from compose.const import COMPOSEFILE_V3_5 as V3_5
+from compose.const import COMPOSEFILE_V3_3 as V3_3
 from compose.const import LABEL_PROJECT
 from compose.progress_stream import stream_output
 from compose.service import Service
@@ -33,7 +32,7 @@ SWARM_ASSUME_MULTINODE = os.environ.get('SWARM_ASSUME_MULTINODE', '0') != '0'
 
 
 def pull_busybox(client):
-    client.pull(BUSYBOX_IMAGE_WITH_TAG, stream=False)
+    client.pull('busybox:latest', stream=False)
 
 
 def get_links(container):
@@ -48,7 +47,7 @@ def get_links(container):
 
 def engine_max_version():
     if 'DOCKER_VERSION' not in os.environ:
-        return V3_5
+        return V3_3
     version = os.environ['DOCKER_VERSION'].partition('-')[0]
     if version_lt(version, '1.10'):
         return V1
@@ -58,7 +57,7 @@ def engine_max_version():
         return V2_1
     if version_lt(version, '17.06'):
         return V3_2
-    return V3_5
+    return V3_3
 
 
 def min_version_skip(version):
@@ -124,7 +123,7 @@ class DockerClientTestCase(unittest.TestCase):
 
     def create_service(self, name, **kwargs):
         if 'image' not in kwargs and 'build' not in kwargs:
-            kwargs['image'] = BUSYBOX_IMAGE_WITH_TAG
+            kwargs['image'] = 'busybox:latest'
 
         if 'command' not in kwargs:
             kwargs['command'] = ["top"]
@@ -140,9 +139,7 @@ class DockerClientTestCase(unittest.TestCase):
     def check_build(self, *args, **kwargs):
         kwargs.setdefault('rm', True)
         build_output = self.client.build(*args, **kwargs)
-        with open(os.devnull, 'w') as devnull:
-            for event in stream_output(build_output, devnull):
-                pass
+        stream_output(build_output, open('/dev/null', 'w'))
 
     def require_api_version(self, minimum):
         api_version = self.client.version()['ApiVersion']
@@ -156,18 +153,6 @@ class DockerClientTestCase(unittest.TestCase):
         volumes = self.client.volumes(filters={'name': volume_name})['Volumes']
         assert len(volumes) > 0
         return self.client.inspect_volume(volumes[0]['Name'])
-
-
-def if_runtime_available(runtime):
-    def decorator(f):
-        @functools.wraps(f)
-        def wrapper(self, *args, **kwargs):
-            if runtime not in self.client.info().get('Runtimes', {}):
-                return pytest.skip("This daemon does not support the '{}'' runtime".format(runtime))
-            return f(self, *args, **kwargs)
-        return wrapper
-
-    return decorator
 
 
 def is_cluster(client):

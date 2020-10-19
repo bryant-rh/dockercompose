@@ -1,4 +1,4 @@
-FROM busybox:1.31.0-uclibc
+FROM busybox:latest
 LABEL com.docker.compose.test_image=true
 LABEL com.docker.compose.test_failing_image=true
 # With the following label the container wil be cleaned up automatically

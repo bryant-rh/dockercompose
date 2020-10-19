@@ -7,10 +7,6 @@ from compose.config.config import ConfigDetails
 from compose.config.config import ConfigFile
 from compose.config.config import load
 
-BUSYBOX_IMAGE_NAME = 'busybox'
-BUSYBOX_DEFAULT_TAG = '1.31.0-uclibc'
-BUSYBOX_IMAGE_WITH_TAG = '{}:{}'.format(BUSYBOX_IMAGE_NAME, BUSYBOX_DEFAULT_TAG)
-
 
 def build_config(contents, **kwargs):
     return load(build_config_details(contents, **kwargs))
@@ -23,10 +19,14 @@ def build_config_details(contents, working_dir='working_dir', filename='filename
     )
 
 
-def create_custom_host_file(client, filename, content):
+def create_host_file(client, filename):
     dirname = os.path.dirname(filename)
+
+    with open(filename, 'r') as fh:
+        content = fh.read()
+
     container = client.create_container(
-        BUSYBOX_IMAGE_WITH_TAG,
+        'busybox:latest',
         ['sh', '-c', 'echo -n "{}" > {}'.format(content, filename)],
         volumes={dirname: {}},
         host_config=client.create_host_config(
@@ -36,7 +36,7 @@ def create_custom_host_file(client, filename, content):
     )
     try:
         client.start(container)
-        exitcode = client.wait(container)['StatusCode']
+        exitcode = client.wait(container)
 
         if exitcode != 0:
             output = client.logs(container)
@@ -48,10 +48,3 @@ def create_custom_host_file(client, filename, content):
             return container_info['Node']['Name']
     finally:
         client.remove_container(container, force=True)
-
-
-def create_host_file(client, filename):
-    with open(filename, 'r') as fh:
-        content = fh.read()
-
-    return create_custom_host_file(client, filename, content)

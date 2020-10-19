@@ -4,8 +4,6 @@ Types for objects parsed from the configuration.
 from __future__ import absolute_import
 from __future__ import unicode_literals
 
-import json
-import ntpath
 import os
 import re
 from collections import namedtuple
@@ -14,7 +12,6 @@ import six
 from docker.utils.ports import build_port_bindings
 
 from ..const import COMPOSEFILE_V1 as V1
-from ..utils import unquote_path
 from .errors import ConfigurationError
 from compose.const import IS_WINDOWS_PLATFORM
 from compose.utils import splitdrive
@@ -125,7 +122,7 @@ def parse_extra_hosts(extra_hosts_config):
 
 
 def normalize_path_for_engine(path):
-    """Windows paths, c:\\my\\path\\shiny, need to be changed to be compatible with
+    """Windows paths, c:\my\path\shiny, need to be changed to be compatible with
     the Engine. Volume paths are expected to be linux style /c/my/path/shiny/
     """
     drive, tail = splitdrive(path)
@@ -136,87 +133,7 @@ def normalize_path_for_engine(path):
     return path.replace('\\', '/')
 
 
-def normpath(path, win_host=False):
-    """ Custom path normalizer that handles Compose-specific edge cases like
-        UNIX paths on Windows hosts and vice-versa. """
-
-    sysnorm = ntpath.normpath if win_host else os.path.normpath
-    # If a path looks like a UNIX absolute path on Windows, it probably is;
-    # we'll need to revert the backslashes to forward slashes after normalization
-    flip_slashes = path.startswith('/') and IS_WINDOWS_PLATFORM
-    path = sysnorm(path)
-    if flip_slashes:
-        path = path.replace('\\', '/')
-    return path
-
-
-class MountSpec(object):
-    options_map = {
-        'volume': {
-            'nocopy': 'no_copy'
-        },
-        'bind': {
-            'propagation': 'propagation'
-        },
-        'tmpfs': {
-            'size': 'tmpfs_size'
-        }
-    }
-    _fields = ['type', 'source', 'target', 'read_only', 'consistency']
-
-    @classmethod
-    def parse(cls, mount_dict, normalize=False, win_host=False):
-        if mount_dict.get('source'):
-            if mount_dict['type'] == 'tmpfs':
-                raise ConfigurationError('tmpfs mounts can not specify a source')
-
-            mount_dict['source'] = normpath(mount_dict['source'], win_host)
-            if normalize:
-                mount_dict['source'] = normalize_path_for_engine(mount_dict['source'])
-
-        return cls(**mount_dict)
-
-    def __init__(self, type, source=None, target=None, read_only=None, consistency=None, **kwargs):
-        self.type = type
-        self.source = source
-        self.target = target
-        self.read_only = read_only
-        self.consistency = consistency
-        self.options = None
-        if self.type in kwargs:
-            self.options = kwargs[self.type]
-
-    def as_volume_spec(self):
-        mode = 'ro' if self.read_only else 'rw'
-        return VolumeSpec(external=self.source, internal=self.target, mode=mode)
-
-    def legacy_repr(self):
-        return self.as_volume_spec().repr()
-
-    def repr(self):
-        res = {}
-        for field in self._fields:
-            if getattr(self, field, None):
-                res[field] = getattr(self, field)
-        if self.options:
-            res[self.type] = self.options
-        return res
-
-    @property
-    def is_named_volume(self):
-        return self.type == 'volume' and self.source
-
-    @property
-    def is_tmpfs(self):
-        return self.type == 'tmpfs'
-
-    @property
-    def external(self):
-        return self.source
-
-
 class VolumeSpec(namedtuple('_VolumeSpec', 'external internal mode')):
-    win32 = False
 
     @classmethod
     def _parse_unix(cls, volume_config):
@@ -260,7 +177,7 @@ class VolumeSpec(namedtuple('_VolumeSpec', 'external internal mode')):
         else:
             external = parts[0]
             parts = separate_next_section(parts[1])
-            external = normpath(external, True)
+            external = os.path.normpath(external)
             internal = parts[0]
             if len(parts) > 1:
                 if ':' in parts[1]:
@@ -273,16 +190,14 @@ class VolumeSpec(namedtuple('_VolumeSpec', 'external internal mode')):
         if normalize:
             external = normalize_path_for_engine(external) if external else None
 
-        result = cls(external, internal, mode)
-        result.win32 = True
-        return result
+        return cls(external, internal, mode)
 
     @classmethod
-    def parse(cls, volume_config, normalize=False, win_host=False):
+    def parse(cls, volume_config, normalize=False):
         """Parse a volume_config path and split it into external:internal[:mode]
         parts to be returned as a valid VolumeSpec.
         """
-        if IS_WINDOWS_PLATFORM or win_host:
+        if IS_WINDOWS_PLATFORM:
             return cls._parse_win32(volume_config, normalize)
         else:
             return cls._parse_unix(volume_config)
@@ -295,7 +210,7 @@ class VolumeSpec(namedtuple('_VolumeSpec', 'external internal mode')):
     @property
     def is_named_volume(self):
         res = self.external and not self.external.startswith(('.', '/', '~'))
-        if not self.win32:
+        if not IS_WINDOWS_PLATFORM:
             return res
 
         return (
@@ -323,18 +238,17 @@ class ServiceLink(namedtuple('_ServiceLink', 'target alias')):
         return self.alias
 
 
-class ServiceConfigBase(namedtuple('_ServiceConfigBase', 'source target uid gid mode name')):
+class ServiceConfigBase(namedtuple('_ServiceConfigBase', 'source target uid gid mode')):
     @classmethod
     def parse(cls, spec):
         if isinstance(spec, six.string_types):
-            return cls(spec, None, None, None, None, None)
+            return cls(spec, None, None, None, None)
         return cls(
             spec.get('source'),
             spec.get('target'),
             spec.get('uid'),
             spec.get('gid'),
             spec.get('mode'),
-            spec.get('name')
         )
 
     @property
@@ -363,19 +277,11 @@ class ServicePort(namedtuple('_ServicePort', 'target published protocol mode ext
         except ValueError:
             raise ConfigurationError('Invalid target port: {}'.format(target))
 
-        if published:
-            if isinstance(published, six.string_types) and '-' in published:  # "x-y:z" format
-                a, b = published.split('-', 1)
-                try:
-                    int(a)
-                    int(b)
-                except ValueError:
-                    raise ConfigurationError('Invalid published port: {}'.format(published))
-            else:
-                try:
-                    published = int(published)
-                except ValueError:
-                    raise ConfigurationError('Invalid published port: {}'.format(published))
+        try:
+            if published:
+                published = int(published)
+        except ValueError:
+            raise ConfigurationError('Invalid published port: {}'.format(published))
 
         return super(ServicePort, cls).__new__(
             cls, target, published, *args, **kwargs
@@ -434,35 +340,6 @@ class ServicePort(namedtuple('_ServicePort', 'target published protocol mode ext
         return normalize_port_dict(self.repr())
 
 
-class GenericResource(namedtuple('_GenericResource', 'kind value')):
-    @classmethod
-    def parse(cls, dct):
-        if 'discrete_resource_spec' not in dct:
-            raise ConfigurationError(
-                'generic_resource entry must include a discrete_resource_spec key'
-            )
-        if 'kind' not in dct['discrete_resource_spec']:
-            raise ConfigurationError(
-                'generic_resource entry must include a discrete_resource_spec.kind subkey'
-            )
-        return cls(
-            dct['discrete_resource_spec']['kind'],
-            dct['discrete_resource_spec'].get('value')
-        )
-
-    def repr(self):
-        return {
-            'discrete_resource_spec': {
-                'kind': self.kind,
-                'value': self.value,
-            }
-        }
-
-    @property
-    def merge_field(self):
-        return self.kind
-
-
 def normalize_port_dict(port):
     return '{external_ip}{has_ext_ip}{published}{is_pub}{target}/{protocol}'.format(
         published=port.get('published', ''),
@@ -472,36 +349,3 @@ def normalize_port_dict(port):
         external_ip=port.get('external_ip', ''),
         has_ext_ip=(':' if port.get('external_ip') else ''),
     )
-
-
-class SecurityOpt(namedtuple('_SecurityOpt', 'value src_file')):
-    @classmethod
-    def parse(cls, value):
-        if not isinstance(value, six.string_types):
-            return value
-        # based on https://github.com/docker/cli/blob/9de1b162f/cli/command/container/opts.go#L673-L697
-        con = value.split('=', 2)
-        if len(con) == 1 and con[0] != 'no-new-privileges':
-            if ':' not in value:
-                raise ConfigurationError('Invalid security_opt: {}'.format(value))
-            con = value.split(':', 2)
-
-        if con[0] == 'seccomp' and con[1] != 'unconfined':
-            try:
-                with open(unquote_path(con[1]), 'r') as f:
-                    seccomp_data = json.load(f)
-            except (IOError, ValueError) as e:
-                raise ConfigurationError('Error reading seccomp profile: {}'.format(e))
-            return cls(
-                'seccomp={}'.format(json.dumps(seccomp_data)), con[1]
-            )
-        return cls(value, None)
-
-    def repr(self):
-        if self.src_file is not None:
-            return 'seccomp:{}'.format(self.src_file)
-        return self.value
-
-    @property
-    def merge_field(self):
-        return self.value

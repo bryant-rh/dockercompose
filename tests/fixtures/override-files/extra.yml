@@ -6,5 +6,5 @@ services:
         - other
 
   other:
-    image: busybox:1.31.0-uclibc
+    image: busybox:latest
     command: "top"

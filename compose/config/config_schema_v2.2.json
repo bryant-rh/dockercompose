@@ -88,10 +88,9 @@
                 "context": {"type": "string"},
                 "dockerfile": {"type": "string"},
                 "args": {"$ref": "#/definitions/list_or_dict"},
-                "labels": {"$ref": "#/definitions/labels"},
+                "labels": {"$ref": "#/definitions/list_or_dict"},
                 "cache_from": {"$ref": "#/definitions/list_of_strings"},
-                "network": {"type": "string"},
-                "isolation": {"type": "string"}
+                "network": {"type": "string"}
               },
               "additionalProperties": false
             }
@@ -111,9 +110,6 @@
         "cpu_percent": {"type": "integer", "minimum": 0, "maximum": 100},
         "cpu_shares": {"type": ["number", "string"]},
         "cpu_quota": {"type": ["number", "string"]},
-        "cpu_period": {"type": ["number", "string"]},
-        "cpu_rt_period": {"type": ["number", "string"]},
-        "cpu_rt_runtime": {"type": ["number", "string"]},
         "cpus": {"type": "number", "minimum": 0},
         "cpuset": {"type": "string"},
         "depends_on": {
@@ -193,7 +189,7 @@
         "init": {"type": ["boolean", "string"]},
         "ipc": {"type": "string"},
         "isolation": {"type": "string"},
-        "labels": {"$ref": "#/definitions/labels"},
+        "labels": {"$ref": "#/definitions/list_or_dict"},
         "links": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
 
         "logging": {
@@ -227,8 +223,7 @@
                         "aliases": {"$ref": "#/definitions/list_of_strings"},
                         "ipv4_address": {"type": "string"},
                         "ipv6_address": {"type": "string"},
-                        "link_local_ips": {"$ref": "#/definitions/list_of_strings"},
-                        "priority": {"type": "number"}
+                        "link_local_ips": {"$ref": "#/definitions/list_of_strings"}
                       },
                       "additionalProperties": false
                     },
@@ -240,7 +235,6 @@
             }
           ]
         },
-        "oom_kill_disable": {"type": "boolean"},
         "oom_score_adj": {"type": "integer", "minimum": -1000, "maximum": 1000},
         "group_add": {
             "type": "array",
@@ -341,8 +335,7 @@
             "properties": {
                 "driver": {"type": "string"},
                 "config": {
-                    "type": "array",
-                    "items": {"$ref": "#/definitions/ipam_config"}
+                    "type": "array"
                 },
                 "options": {
                   "type": "object",
@@ -363,26 +356,7 @@
         },
         "internal": {"type": "boolean"},
         "enable_ipv6": {"type": "boolean"},
-        "labels": {"$ref": "#/definitions/labels"},
-        "name": {"type": "string"}
-      },
-      "additionalProperties": false
-    },
-
-    "ipam_config": {
-      "id": "#/definitions/ipam_config",
-      "type": "object",
-      "properties": {
-        "subnet": {"type": "string"},
-        "ip_range": {"type": "string"},
-        "gateway": {"type": "string"},
-        "aux_addresses": {
-          "type": "object",
-          "patternProperties": {
-            "^.+$": {"type": "string"}
-          },
-          "additionalProperties": false
-        }
+        "labels": {"$ref": "#/definitions/list_or_dict"}
       },
       "additionalProperties": false
     },
@@ -405,7 +379,7 @@
           },
           "additionalProperties": false
         },
-        "labels": {"$ref": "#/definitions/labels"},
+        "labels": {"$ref": "#/definitions/list_or_dict"},
         "name": {"type": "string"}
       },
       "additionalProperties": false
@@ -431,21 +405,6 @@
           "patternProperties": {
             ".+": {
               "type": ["string", "number", "null"]
-            }
-          },
-          "additionalProperties": false
-        },
-        {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
-      ]
-    },
-
-    "labels": {
-      "oneOf": [
-        {
-          "type": "object",
-          "patternProperties": {
-            ".+": {
-              "type": "string"
             }
           },
           "additionalProperties": false

@@ -78,7 +78,7 @@
         "hostname": {"type": "string"},
         "image": {"type": "string"},
         "ipc": {"type": "string"},
-        "labels": {"$ref": "#/definitions/labels"},
+        "labels": {"$ref": "#/definitions/list_or_dict"},
         "links": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
         "log_driver": {"type": "string"},
         "log_opt": {"type": "object"},
@@ -158,21 +158,6 @@
           "patternProperties": {
             ".+": {
               "type": ["string", "number", "null"]
-            }
-          },
-          "additionalProperties": false
-        },
-        {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
-      ]
-    },
-
-    "labels": {
-      "oneOf": [
-        {
-          "type": "object",
-          "patternProperties": {
-            ".+": {
-              "type": "string"
             }
           },
           "additionalProperties": false

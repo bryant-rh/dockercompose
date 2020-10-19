@@ -1,201 +1,148 @@
-# Release HOWTO
-
-This file describes the process of making a public release of `docker-compose`.
-Please read it carefully before proceeding!
+Building a Compose release
+==========================
 
 ## Prerequisites
 
-The following things are required to bring a release to a successful conclusion
+The release scripts require the following tools installed on the host:
 
-### Local Docker engine (Linux Containers)
+* https://hub.github.com/
+* https://stedolan.github.io/jq/
+* http://pandoc.org/
 
-The release script builds images that will be part of the release.
+## To get started with a new release
 
-### Docker Hub account
+Create a branch, update version, and add release notes by running `make-branch`
 
-You should be logged into a Docker Hub account that allows pushing to the
-following repositories:
+        ./script/release/make-branch $VERSION [$BASE_VERSION]
 
-- docker/compose
-- docker/compose-tests
+`$BASE_VERSION` will default to master. Use the last version tag for a bug fix
+release.
 
-### Python
+As part of this script you'll be asked to:
 
-The release script is written in Python and requires Python 3.3 at minimum.
+1.  Update the version in `compose/__init__.py` and `script/run/run.sh`.
 
-### A Github account and Github API token
+    If the next release will be an RC, append `-rcN`, e.g. `1.4.0-rc1`.
 
-Your Github account needs to have write access on the `docker/compose` repo.
-To generate a Github token, head over to the
-[Personal access tokens](https://github.com/settings/tokens) page in your
-Github settings and select "Generate new token". Your token should include
-(at minimum) the following scopes:
+2.  Write release notes in `CHANGELOG.md`.
 
-- `repo:status`
-- `public_repo`
+    Almost every feature enhancement should be mentioned, with the most
+    visible/exciting ones first. Use descriptive sentences and give context
+    where appropriate.
 
-This API token should be exposed to the release script through the
-`GITHUB_TOKEN` environment variable.
+    Bug fixes are worth mentioning if it's likely that they've affected lots
+    of people, or if they were regressions in the previous version.
 
-### A Bintray account and Bintray API key
+    Improvements to the code are not worth mentioning.
 
-Your Bintray account will need to be an admin member of the
-[docker-compose organization](https://bintray.com/docker-compose).
-Additionally, you should generate a personal API key. To do so, click your
-username in the top-right hand corner and select "Edit profile" ; on the new
-page, select "API key" in the left-side menu.
+3.  Create a new repository on [bintray](https://bintray.com/docker-compose).
+    The name has to match the name of the branch (e.g. `bump-1.9.0`) and the
+    type should be "Generic". Other fields can be left blank.
 
-This API key should be exposed to the release script through the
-`BINTRAY_TOKEN` environment variable.
+4.  Check that the `vnext-compose` branch on
+    [the docs repo](https://github.com/docker/docker.github.io/) has
+    documentation for all the new additions in the upcoming release, and create
+    a PR there for what needs to be amended.
 
-### A PyPi account
 
-Said account needs to be a member of the maintainers group for the
-[`docker-compose` project](https://pypi.org/project/docker-compose/).
+## When a PR is merged into master that we want in the release
 
-Moreover, the `~/.pypirc` file should exist on your host and contain the
-relevant pypi credentials.
+1. Check out the bump branch and run the cherry pick script
 
-The following is a sample `.pypirc` provided as a guideline:
+        git checkout bump-$VERSION
+        ./script/release/cherry-pick-pr $PR_NUMBER
 
-```
-[distutils]
-index-servers =
-    pypi
+2. When you are done cherry-picking branches move the bump version commit to HEAD
 
-[pypi]
-username = user
-password = pass
-```
+        ./script/release/rebase-bump-commit
+        git push --force $USERNAME bump-$VERSION
 
-## Start a feature release
 
-A feature release is a release that includes all changes present in the
-`master` branch when initiated. It's typically versioned `X.Y.0-rc1`, where
-Y is the minor version of the previous release incremented by one. A series
-of one or more Release Candidates (RCs) should be made available to the public
-to find and squash potential bugs.
+## To release a version (whether RC or stable)
 
-From the root of the Compose repository, run the following command:
-```
-./script/release/release.sh -b <BINTRAY_USERNAME> start X.Y.0-rc1
-```
+Check out the bump branch and run the `build-binaries` script
 
-After a short initialization period, the script will invite you to edit the
-`CHANGELOG.md` file. Do so by being careful to respect the same format as
-previous releases. Once done, the script will display a `diff` of the staged
-changes for the bump commit. Once you validate these, a bump commit will be
-created on the newly created release branch and pushed remotely.
+        git checkout bump-$VERSION
+        ./script/release/build-binaries
 
-The release tool then waits for the CI to conclude before proceeding.
-If failures are reported, the release will be aborted until these are fixed.
-Please refer to the "Resume a draft release" section below for more details.
+When prompted build the non-linux binaries and test them.
 
-Once all resources have been prepared, the release script will exit with a
-message resembling this one:
+1.  Download the different platform binaries by running the following script:
 
-```
-You're almost done! Please verify that everything is in order and you are ready
-to make the release public, then run the following command:
-./script/release/release.sh -b user finalize X.Y.0-rc1
-```
+    `./script/release/download-binaries $VERSION`
 
-Once you are ready to finalize the release (making binaries and other versioned
-assets public), proceed to the "Finalize a release" section of this guide.
+    The binaries for Linux, OSX and Windows will be downloaded in the `binaries-$VERSION` folder.
 
-## Start a patch release
+3.  Draft a release from the tag on GitHub (the `build-binaries` script will open the window for
+    you)
 
-A patch release is a release that builds off a previous release with discrete
-additions. This can be an RC release after RC1 (`X.Y.0-rcZ`, `Z > 1`), a GA release
-based off the final RC (`X.Y.0`), or a bugfix release based off a previous
-GA release (`X.Y.Z`, `Z > 0`).
+    The tag will only be present on Github when you run the `push-release`
+    script in step 7, but you can pre-fill it at that point.
 
-From the root of the Compose repository, run the following command:
-```
-./script/release/release.sh -b <BINTRAY_USERNAME> start --patch=BASE_VERSION RELEASE_VERSION
-```
+4.  Paste in installation instructions and release notes. Here's an example -
+    change the Compose version and Docker version as appropriate:
 
-The process of starting a patch release is identical to starting a feature
-release except for one difference ; at the beginning, the script will ask for
-PR numbers you wish to cherry-pick into the release. These numbers should
-correspond to existing PRs on the docker/compose repository. Multiple numbers
-should be separated by whitespace.
+        If you're a Mac or Windows user, the best way to install Compose and keep it up-to-date is **[Docker for Mac and Windows](https://www.docker.com/products/docker)**.
 
-Once you are ready to finalize the release (making binaries and other versioned
-assets public), proceed to the "Finalize a release" section of this guide.
+        Docker for Mac and Windows will automatically install the latest version of Docker Engine for you.
 
-## Finalize a release
+        Alternatively, you can use the usual commands to install or upgrade Compose:
 
-Once you're ready to make your release public, you may execute the following
-command from the root of the Compose repository:
-```
-./script/release/release.sh -b <BINTRAY_USERNAME> finalize RELEASE_VERSION
-```
+        ```
+        curl -L https://github.com/docker/compose/releases/download/1.16.0/docker-compose-`uname -s`-`uname -m` > /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+        ```
 
-Note that this command will create and publish versioned assets to the public.
-As a result, it can not be reverted. The command will perform some basic
-sanity checks before doing so, but it is your responsibility to ensure
-everything is in order before pushing the button.
+        See the [install docs](https://docs.docker.com/compose/install/) for more install options and instructions.
 
-After the command exits, you should make sure:
+        ## Compose file format compatibility matrix
 
-- The `docker/compose:VERSION` image is available on Docker Hub and functional
-- The `pip install -U docker-compose==VERSION` command correctly installs the
-  specified version
-- The install command on the Github release page installs the new release
+        | Compose file format | Docker Engine |
+        | --- | --- |
+        | 3.3 | 17.06.0+ |
+        | 3.0 &ndash; 3.2 | 1.13.0+ |
+        | 2.3| 17.06.0+ |
+        | 2.2 | 1.13.0+ |
+        | 2.1 | 1.12.0+ |
+        | 2.0 | 1.10.0+ |
+        | 1.0 | 1.9.1+ |
 
-## Resume a draft release
+        ## Changes
 
-"Resuming" a release lets you address the following situations occurring before
-a release is made final:
+        ...release notes go here...
 
-- Cherry-pick additional PRs to include in the release
-- Resume a release that was aborted because of CI failures after they've been
-  addressed
-- Rebuild / redownload assets after manual changes have been made to the
-  release branch
-- etc.
+5.  Attach the binaries and `script/run/run.sh`
 
-From the root of the Compose repository, run the following command:
-```
-./script/release/release.sh -b <BINTRAY_USERNAME> resume RELEASE_VERSION
-```
+6.  Add "Thanks" with a list of contributors. The contributor list can be generated
+    by running `./script/release/contributors`.
 
-The release tool will attempt to determine what steps it's already been through
-for the specified release and pick up where it left off. Some steps are
-executed again no matter what as it's assumed they'll produce different
-results, like building images or downloading binaries.
+7.  If everything looks good, it's time to push the release.
 
-## Cancel a draft release
 
-If issues snuck into your release branch, it is sometimes easier to start from
-scratch. Before a release has been finalized, it is possible to cancel it using
-the following command:
-```
-./script/release/release.sh -b <BINTRAY_USERNAME> cancel RELEASE_VERSION
-```
+        ./script/release/push-release
 
-This will remove the release branch with this release (locally and remotely),
-close the associated PR, remove the release page draft on Github and delete
-the Bintray repository for it, allowing you to start fresh.
 
-## Manual operations
+8.  Merge the bump PR.
 
-Some common, release-related operations are not covered by this tool and should
-be handled manually by the operator:
+8.  Publish the release on GitHub.
 
-- After any release:
-    - Announce new release on Slack
-- After a GA release:
-    - Close the release milestone
-    - Merge back `CHANGELOG.md` changes from the `release` branch into `master`
-    - Bump the version in `compose/__init__.py` to the *next* minor version
-      number with `dev` appended. For example, if you just released `1.4.0`,
-      update it to `1.5.0dev`
-    - Update compose_version in [github.com/docker/docker.github.io/blob/master/_config.yml](https://github.com/docker/docker.github.io/blob/master/_config.yml) and [github.com/docker/docker.github.io/blob/master/_config_authoring.yml](https://github.com/docker/docker.github.io/blob/master/_config_authoring.yml)
-    - Update the release note in [github.com/docker/docker.github.io](https://github.com/docker/docker.github.io/blob/master/release-notes/docker-compose.md)
+9.  Check that all the binaries download (following the install instructions) and run.
 
-## Advanced options
+10. Announce the release on the appropriate Slack channel(s).
 
-You can consult the full list of options for the release tool by executing
-`./script/release/release.sh --help`.
+## If it’s a stable release (not an RC)
+
+1. Close the release’s milestone.
+
+## If it’s a minor release (1.x.0), rather than a patch release (1.x.y)
+
+1. Open a PR against `master` to:
+
+    - update `CHANGELOG.md` to bring it in line with `release`
+    - bump the version in `compose/__init__.py` to the *next* minor version number with `dev` appended. For example, if you just released `1.4.0`, update it to `1.5.0dev`.
+
+2. Get the PR merged.
+
+## Finally
+
+1. Celebrate, however you’d like.

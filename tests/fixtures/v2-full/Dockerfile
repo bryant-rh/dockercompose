@@ -1,4 +1,4 @@
 
-FROM busybox:1.31.0-uclibc
+FROM busybox:latest
 RUN  echo something
 CMD  top

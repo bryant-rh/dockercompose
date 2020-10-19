@@ -7,11 +7,9 @@ import yaml
 from compose.config import types
 from compose.const import COMPOSEFILE_V1 as V1
 from compose.const import COMPOSEFILE_V2_1 as V2_1
-from compose.const import COMPOSEFILE_V2_3 as V2_3
 from compose.const import COMPOSEFILE_V3_0 as V3_0
 from compose.const import COMPOSEFILE_V3_2 as V3_2
 from compose.const import COMPOSEFILE_V3_4 as V3_4
-from compose.const import COMPOSEFILE_V3_5 as V3_5
 
 
 def serialize_config_type(dumper, data):
@@ -24,11 +22,10 @@ def serialize_dict_type(dumper, data):
 
 
 def serialize_string(dumper, data):
-    """ Ensure boolean-like strings are quoted in the output """
+    """ Ensure boolean-like strings are quoted in the output and escape $ characters """
     representer = dumper.represent_str if six.PY3 else dumper.represent_unicode
 
-    if isinstance(data, six.binary_type):
-        data = data.decode('utf-8')
+    data = data.replace('$', '$$')
 
     if data.lower() in ('y', 'n', 'yes', 'no', 'on', 'off', 'true', 'false'):
         # Empirically only y/n appears to be an issue, but this might change
@@ -37,19 +34,13 @@ def serialize_string(dumper, data):
     return representer(data)
 
 
-def serialize_string_escape_dollar(dumper, data):
-    """ Ensure boolean-like strings are quoted in the output and escape $ characters """
-    data = data.replace('$', '$$')
-    return serialize_string(dumper, data)
-
-
-yaml.SafeDumper.add_representer(types.MountSpec, serialize_dict_type)
 yaml.SafeDumper.add_representer(types.VolumeFromSpec, serialize_config_type)
 yaml.SafeDumper.add_representer(types.VolumeSpec, serialize_config_type)
-yaml.SafeDumper.add_representer(types.SecurityOpt, serialize_config_type)
 yaml.SafeDumper.add_representer(types.ServiceSecret, serialize_dict_type)
 yaml.SafeDumper.add_representer(types.ServiceConfig, serialize_dict_type)
 yaml.SafeDumper.add_representer(types.ServicePort, serialize_dict_type)
+yaml.SafeDumper.add_representer(str, serialize_string)
+yaml.SafeDumper.add_representer(six.text_type, serialize_string)
 
 
 def denormalize_config(config, image_digests=None):
@@ -76,38 +67,20 @@ def denormalize_config(config, image_digests=None):
                 del conf['external_name']
 
             if 'name' in conf:
-                if config.version < V2_1 or (
-                        config.version >= V3_0 and config.version < v3_introduced_name_key(key)):
+                if config.version < V2_1 or (config.version >= V3_0 and config.version < V3_4):
                     del conf['name']
                 elif 'external' in conf:
-                    conf['external'] = bool(conf['external'])
-
-            if 'attachable' in conf and config.version < V3_2:
-                # For compatibility mode, this option is invalid in v2
-                del conf['attachable']
+                    conf['external'] = True
 
     return result
 
 
-def v3_introduced_name_key(key):
-    if key == 'volumes':
-        return V3_4
-    return V3_5
-
-
-def serialize_config(config, image_digests=None, escape_dollar=True):
-    if escape_dollar:
-        yaml.SafeDumper.add_representer(str, serialize_string_escape_dollar)
-        yaml.SafeDumper.add_representer(six.text_type, serialize_string_escape_dollar)
-    else:
-        yaml.SafeDumper.add_representer(str, serialize_string)
-        yaml.SafeDumper.add_representer(six.text_type, serialize_string)
+def serialize_config(config, image_digests=None):
     return yaml.safe_dump(
         denormalize_config(config, image_digests),
         default_flow_style=False,
         indent=2,
-        width=80,
-        allow_unicode=True
+        width=80
     )
 
 
@@ -163,15 +136,10 @@ def denormalize_service_dict(service_dict, version, image_digest=None):
             service_dict['healthcheck']['start_period'] = serialize_ns_time_value(
                 service_dict['healthcheck']['start_period']
             )
-
-    if 'ports' in service_dict:
+    if 'ports' in service_dict and version < V3_2:
         service_dict['ports'] = [
-            p.legacy_repr() if p.external_ip or version < V3_2 else p
+            p.legacy_repr() if isinstance(p, types.ServicePort) else p
             for p in service_dict['ports']
-        ]
-    if 'volumes' in service_dict and (version < V2_3 or (version > V3_0 and version < V3_2)):
-        service_dict['volumes'] = [
-            v.legacy_repr() if isinstance(v, types.MountSpec) else v for v in service_dict['volumes']
         ]
 
     return service_dict

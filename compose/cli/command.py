@@ -10,12 +10,8 @@ import six
 from . import errors
 from . import verbose_proxy
 from .. import config
-from .. import parallel
 from ..config.environment import Environment
 from ..const import API_VERSIONS
-from ..const import LABEL_CONFIG_FILES
-from ..const import LABEL_ENVIRONMENT_FILE
-from ..const import LABEL_WORKING_DIR
 from ..project import Project
 from .docker_client import docker_client
 from .docker_client import get_tls_version
@@ -24,29 +20,9 @@ from .utils import get_version_info
 
 log = logging.getLogger(__name__)
 
-SILENT_COMMANDS = {
-    'events',
-    'exec',
-    'kill',
-    'logs',
-    'pause',
-    'ps',
-    'restart',
-    'rm',
-    'start',
-    'stop',
-    'top',
-    'unpause',
-}
 
-
-def project_from_options(project_dir, options, additional_options={}):
-    override_dir = options.get('--project-directory')
-    environment_file = options.get('--env-file')
-    environment = Environment.from_env_file(override_dir or project_dir, environment_file)
-    environment.silent = options.get('COMMAND', None) in SILENT_COMMANDS
-    set_parallel_limit(environment)
-
+def project_from_options(project_dir, options):
+    environment = Environment.from_env_file(project_dir)
     host = options.get('--host')
     if host is not None:
         host = host.lstrip('=')
@@ -56,42 +32,19 @@ def project_from_options(project_dir, options, additional_options={}):
         project_name=options.get('--project-name'),
         verbose=options.get('--verbose'),
         host=host,
-        tls_config=tls_config_from_options(options, environment),
+        tls_config=tls_config_from_options(options),
         environment=environment,
-        override_dir=override_dir,
-        compatibility=options.get('--compatibility'),
-        interpolate=(not additional_options.get('--no-interpolate')),
-        environment_file=environment_file
+        override_dir=options.get('--project-directory'),
     )
 
 
-def set_parallel_limit(environment):
-    parallel_limit = environment.get('COMPOSE_PARALLEL_LIMIT')
-    if parallel_limit:
-        try:
-            parallel_limit = int(parallel_limit)
-        except ValueError:
-            raise errors.UserError(
-                'COMPOSE_PARALLEL_LIMIT must be an integer (found: "{}")'.format(
-                    environment.get('COMPOSE_PARALLEL_LIMIT')
-                )
-            )
-        if parallel_limit <= 1:
-            raise errors.UserError('COMPOSE_PARALLEL_LIMIT can not be less than 2')
-        parallel.GlobalLimit.set_global_limit(parallel_limit)
-
-
-def get_config_from_options(base_dir, options, additional_options={}):
-    override_dir = options.get('--project-directory')
-    environment_file = options.get('--env-file')
-    environment = Environment.from_env_file(override_dir or base_dir, environment_file)
+def get_config_from_options(base_dir, options):
+    environment = Environment.from_env_file(base_dir)
     config_path = get_config_path_from_options(
         base_dir, options, environment
     )
     return config.load(
-        config.find(base_dir, config_path, environment, override_dir),
-        options.get('--compatibility'),
-        not additional_options.get('--no-interpolate')
+        config.find(base_dir, config_path, environment)
     )
 
 
@@ -128,15 +81,14 @@ def get_client(environment, verbose=False, version=None, tls_config=None, host=N
 
 
 def get_project(project_dir, config_path=None, project_name=None, verbose=False,
-                host=None, tls_config=None, environment=None, override_dir=None,
-                compatibility=False, interpolate=True, environment_file=None):
+                host=None, tls_config=None, environment=None, override_dir=None):
     if not environment:
         environment = Environment.from_env_file(project_dir)
     config_details = config.find(project_dir, config_path, environment, override_dir)
     project_name = get_project_name(
         config_details.working_dir, project_name, environment
     )
-    config_data = config.load(config_details, compatibility, interpolate)
+    config_data = config.load(config_details)
 
     api_version = environment.get(
         'COMPOSE_API_VERSION',
@@ -148,34 +100,12 @@ def get_project(project_dir, config_path=None, project_name=None, verbose=False,
     )
 
     with errors.handle_connection_errors(client):
-        return Project.from_config(
-            project_name,
-            config_data,
-            client,
-            environment.get('DOCKER_DEFAULT_PLATFORM'),
-            execution_context_labels(config_details, environment_file),
-        )
-
-
-def execution_context_labels(config_details, environment_file):
-    extra_labels = [
-        '{0}={1}'.format(LABEL_WORKING_DIR, os.path.abspath(config_details.working_dir)),
-        '{0}={1}'.format(LABEL_CONFIG_FILES, config_files_label(config_details)),
-    ]
-    if environment_file is not None:
-        extra_labels.append('{0}={1}'.format(LABEL_ENVIRONMENT_FILE,
-                                             os.path.normpath(environment_file)))
-    return extra_labels
-
-
-def config_files_label(config_details):
-    return ",".join(
-        map(str, (os.path.normpath(c.filename) for c in config_details.config_files)))
+        return Project.from_config(project_name, config_data, client)
 
 
 def get_project_name(working_dir, project_name=None, environment=None):
     def normalize_name(name):
-        return re.sub(r'[^-_a-z0-9]', '', name.lower())
+        return re.sub(r'[^a-z0-9]', '', name.lower())
 
     if not environment:
         environment = Environment.from_env_file(working_dir)

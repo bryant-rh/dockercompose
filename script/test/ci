@@ -14,9 +14,12 @@ set -ex
 
 docker version
 
-export DOCKER_VERSIONS=${DOCKER_VERSIONS:-all}
+export DOCKER_VERSIONS=all
 STORAGE_DRIVER=${STORAGE_DRIVER:-overlay}
 export DOCKER_DAEMON_ARGS="--storage-driver=$STORAGE_DRIVER"
 
 GIT_VOLUME="--volumes-from=$(hostname)"
 . script/test/all
+
+>&2 echo "Building Linux binary"
+. script/build/linux-entrypoint

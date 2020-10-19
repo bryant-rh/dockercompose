@@ -4,16 +4,10 @@ from __future__ import unicode_literals
 from functools import reduce
 
 import six
-from docker.errors import ImageNotFound
 
 from .const import LABEL_CONTAINER_NUMBER
-from .const import LABEL_ONE_OFF
 from .const import LABEL_PROJECT
 from .const import LABEL_SERVICE
-from .const import LABEL_SLUG
-from .const import LABEL_VERSION
-from .utils import truncate_id
-from .version import ComposeVersion
 
 
 class Container(object):
@@ -73,45 +67,25 @@ class Container(object):
         return self.dictionary['Name'][1:]
 
     @property
-    def project(self):
-        return self.labels.get(LABEL_PROJECT)
-
-    @property
     def service(self):
         return self.labels.get(LABEL_SERVICE)
 
     @property
     def name_without_project(self):
-        if self.name.startswith('{0}_{1}'.format(self.project, self.service)):
-            return '{0}_{1}'.format(self.service, self.number if self.number is not None else self.slug)
+        project = self.labels.get(LABEL_PROJECT)
+
+        if self.name.startswith('{0}_{1}'.format(project, self.service)):
+            return '{0}_{1}'.format(self.service, self.number)
         else:
             return self.name
 
     @property
     def number(self):
-        if self.one_off:
-            # One-off containers are no longer assigned numbers and use slugs instead.
-            return None
-
         number = self.labels.get(LABEL_CONTAINER_NUMBER)
         if not number:
             raise ValueError("Container {0} does not have a {1} label".format(
                 self.short_id, LABEL_CONTAINER_NUMBER))
         return int(number)
-
-    @property
-    def slug(self):
-        if not self.full_slug:
-            return None
-        return truncate_id(self.full_slug)
-
-    @property
-    def full_slug(self):
-        return self.labels.get(LABEL_SLUG)
-
-    @property
-    def one_off(self):
-        return self.labels.get(LABEL_ONE_OFF) == 'True'
 
     @property
     def ports(self):
@@ -152,7 +126,7 @@ class Container(object):
         if self.is_restarting:
             return 'Restarting'
         if self.is_running:
-            return 'Ghost' if self.get('State.Ghost') else self.human_readable_health_status
+            return 'Ghost' if self.get('State.Ghost') else 'Up'
         else:
             return 'Exit %s' % self.get('State.ExitCode')
 
@@ -194,18 +168,6 @@ class Container(object):
     def has_api_logs(self):
         log_type = self.log_driver
         return not log_type or log_type in ('json-file', 'journald')
-
-    @property
-    def human_readable_health_status(self):
-        """ Generate UP status string with up time and health
-        """
-        status_string = 'Up'
-        container_status = self.get('State.Health.Status')
-        if container_status == 'starting':
-            status_string += ' (health: starting)'
-        elif container_status is not None:
-            status_string += ' (%s)' % container_status
-        return status_string
 
     def attach_log_stream(self):
         """A log stream can only be attached if the container uses a json-file
@@ -268,17 +230,17 @@ class Container(object):
         """Rename the container to a hopefully unique temporary container name
         by prepending the short id.
         """
-        if not self.name.startswith(self.short_id):
-            self.client.rename(
-                self.id, '{0}_{1}'.format(self.short_id, self.name)
-            )
+        self.client.rename(
+            self.id,
+            '%s_%s' % (self.short_id, self.name)
+        )
 
     def inspect_if_not_inspected(self):
         if not self.has_been_inspected:
             self.inspect()
 
     def wait(self):
-        return self.client.wait(self.id).get('StatusCode', 127)
+        return self.client.wait(self.id)
 
     def logs(self, *args, **kwargs):
         return self.client.logs(self.id, *args, **kwargs)
@@ -288,29 +250,8 @@ class Container(object):
         self.has_been_inspected = True
         return self.dictionary
 
-    def image_exists(self):
-        try:
-            self.client.inspect_image(self.image)
-        except ImageNotFound:
-            return False
-
-        return True
-
-    def reset_image(self, img_id):
-        """ If this container's image has been removed, temporarily replace the old image ID
-            with `img_id`.
-        """
-        if not self.image_exists():
-            self.dictionary['Image'] = img_id
-
     def attach(self, *args, **kwargs):
         return self.client.attach(self.id, *args, **kwargs)
-
-    def has_legacy_proj_name(self, project_name):
-        return (
-            ComposeVersion(self.labels.get(LABEL_VERSION)) < ComposeVersion('1.21.0') and
-            self.project != project_name
-        )
 
     def __repr__(self):
         return '<Container: %s (%s)>' % (self.name, self.id[:6])
