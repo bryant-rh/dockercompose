@@ -1,0 +1,30 @@
+name: compose-arm64:1.25.0
+
+on:
+  push:
+    branches: 
+      - master
+    paths:
+      - 'Dockerfile'
+      # - 'gocv-debian.Dockerfile'
+
+
+jobs:
+  opencv-ubuntu:
+    runs-on: ubuntu-latest
+    name: builx compose-arm64:1.25.0
+    steps:
+      # https://github.com/marketplace/actions/customizable-docker-buildx
+      - name: Checkout master
+        uses: actions/checkout@master
+      - name: Build and publish image
+        uses: ilteoood/docker_buildx@master
+        with:
+          publish: true
+          imageName: bryantrh/compose-arm64
+          tag: 1.25.0
+          dockerHubUser: ${{ secrets.DOCKER_USERNAME }}
+          dockerHubPassword: ${{ secrets.DOCKER_PASSWORD }}
+          #platform: linux/amd64,linux/arm64
+          platform: linux/arm64
+          dockerFile: arm64/base.Dockerfile
