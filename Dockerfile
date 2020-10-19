@@ -1,4 +1,4 @@
-FROM debian:wheezy
+FROM debian
 
 RUN set -ex; \
     apt-get update -qq; \
